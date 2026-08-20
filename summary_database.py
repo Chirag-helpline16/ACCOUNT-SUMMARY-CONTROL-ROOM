@@ -138,6 +138,252 @@ def connect_database(
     return connection
 
 
+def _ensure_column(
+    connection: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+    declaration: str,
+) -> None:
+    columns = {
+        row["name"]
+        for row in connection.execute(f"PRAGMA table_info({table_name})")
+    }
+    if column_name not in columns:
+        connection.execute(
+            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {declaration}"
+        )
+
+
+def _apply_schema_migrations(connection: sqlite3.Connection) -> None:
+    """Add strict deduplication safeguards to new and existing databases."""
+    source_columns = {
+        "content_sha256": "TEXT",
+        "duplicate_of_source_file_id": (
+            "INTEGER REFERENCES source_files(id) ON DELETE SET NULL"
+        ),
+        "main_rows_read": "INTEGER NOT NULL DEFAULT 0",
+        "duplicate_transaction_rows_removed": "INTEGER NOT NULL DEFAULT 0",
+        "other_rows_read": "INTEGER NOT NULL DEFAULT 0",
+        "duplicate_other_rows_removed": "INTEGER NOT NULL DEFAULT 0",
+        "duplicate_summary_rows_removed": "INTEGER NOT NULL DEFAULT 0",
+        "fast_duplicate_audit_version": "TEXT",
+        "fast_duplicate_rows_found": "INTEGER NOT NULL DEFAULT 0",
+        "fast_duplicate_audit_error": "TEXT",
+        "fast_duplicate_reprocessed_version": "TEXT",
+    }
+    for column_name, declaration in source_columns.items():
+        _ensure_column(
+            connection,
+            "source_files",
+            column_name,
+            declaration,
+        )
+
+    version_row = connection.execute(
+        "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
+    ).fetchone()
+    try:
+        schema_version = int(version_row["value"]) if version_row else 0
+    except (TypeError, ValueError):
+        schema_version = 0
+
+    if schema_version < 3:
+        _remove_existing_exact_summary_duplicates(connection)
+        # Version 2 briefly used an account-level key that was too broad for
+        # accounts with multiple legitimate transaction groups.  Replace it
+        # with the complete summary identity used by the writer below.
+        connection.executescript(
+            """
+            DROP INDEX IF EXISTS uq_account_summary_ack_account;
+            DROP INDEX IF EXISTS uq_bank_summary_ack_bank;
+            DROP INDEX IF EXISTS uq_partial_summary_ack_bank;
+            """
+        )
+
+    # A logical summary row may exist only once.  These keys reflect the
+    # grouping performed by app_account.py and protect the database even if a
+    # caller bypasses the overnight worker.
+    connection.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS idx_source_content_sha256
+            ON source_files(content_sha256);
+        CREATE INDEX IF NOT EXISTS idx_source_duplicate_of
+            ON source_files(duplicate_of_source_file_id);
+
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_account_summary_identity
+            ON account_summaries(
+                TRIM(acknowledgement_no) COLLATE NOCASE,
+                TRIM(COALESCE(bank_name, '')) COLLATE NOCASE,
+                TRIM(COALESCE(account_number, '')) COLLATE NOCASE,
+                TRIM(COALESCE(credited_transaction_id, '')) COLLATE NOCASE,
+                total_credited_amount,
+                total_debited_amount,
+                updated_amount,
+                not_updated_amount,
+                TRIM(COALESCE(status, '')) COLLATE NOCASE
+            );
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_bank_summary_identity
+            ON bank_summaries(
+                TRIM(acknowledgement_no) COLLATE NOCASE,
+                TRIM(COALESCE(bank_name, '')) COLLATE NOCASE
+            );
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_partial_summary_identity
+            ON partial_bank_summaries(
+                TRIM(acknowledgement_no) COLLATE NOCASE,
+                TRIM(COALESCE(bank_name, '')) COLLATE NOCASE
+            );
+
+        CREATE TRIGGER IF NOT EXISTS trg_one_source_per_ack
+        BEFORE INSERT ON account_summaries
+        WHEN EXISTS (
+            SELECT 1
+            FROM account_summaries existing
+            WHERE existing.acknowledgement_no = NEW.acknowledgement_no
+                  COLLATE NOCASE
+              AND existing.source_file_id <> NEW.source_file_id
+        )
+        BEGIN
+            SELECT RAISE(
+                ABORT,
+                'Acknowledgement already belongs to another source file'
+            );
+        END;
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO schema_metadata(key, value)
+        VALUES ('schema_version', '4')
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """
+    )
+
+
+def _remove_existing_exact_summary_duplicates(
+    connection: sqlite3.Connection,
+) -> None:
+    """Remove only provably identical legacy summary rows before constraints."""
+    configurations = (
+        (
+            "account_summaries",
+            "account_row_count",
+            (
+                "TRIM(COALESCE(acknowledgement_no, '')) COLLATE NOCASE",
+                "TRIM(COALESCE(bank_name, '')) COLLATE NOCASE",
+                "TRIM(COALESCE(account_number, '')) COLLATE NOCASE",
+                "TRIM(COALESCE(credited_transaction_id, '')) COLLATE NOCASE",
+                "total_credited_amount",
+                "total_debited_amount",
+                "updated_amount",
+                "not_updated_amount",
+                "TRIM(COALESCE(status, '')) COLLATE NOCASE",
+                "TRIM(COALESCE(found_in_other_sheets, '')) COLLATE NOCASE",
+                "TRIM(COALESCE(breakdown_by_sheet, '')) COLLATE NOCASE",
+                "TRIM(COALESCE(duplicate_entry_info, '')) COLLATE NOCASE",
+            ),
+        ),
+        (
+            "bank_summaries",
+            "bank_row_count",
+            (
+                "TRIM(COALESCE(acknowledgement_no, '')) COLLATE NOCASE",
+                "TRIM(COALESCE(bank_name, '')) COLLATE NOCASE",
+                "total_credited_amount",
+                "total_debited_amount",
+                "updated_amount",
+                "not_updated_amount",
+                "TRIM(COALESCE(status, '')) COLLATE NOCASE",
+                "TRIM(COALESCE(found_in_other_sheets, '')) COLLATE NOCASE",
+                "TRIM(COALESCE(breakdown_by_sheet, '')) COLLATE NOCASE",
+                "TRIM(COALESCE(duplicate_entry_info, '')) COLLATE NOCASE",
+            ),
+        ),
+        (
+            "partial_bank_summaries",
+            "partial_bank_row_count",
+            (
+                "TRIM(COALESCE(acknowledgement_no, '')) COLLATE NOCASE",
+                "TRIM(COALESCE(bank_name, '')) COLLATE NOCASE",
+                "total_credited_amount",
+                "total_debited_amount",
+                "updated_amount",
+                "not_updated_amount",
+                "TRIM(COALESCE(status, '')) COLLATE NOCASE",
+                "TRIM(COALESCE(found_in_other_sheets, '')) COLLATE NOCASE",
+                "TRIM(COALESCE(breakdown_by_sheet, '')) COLLATE NOCASE",
+                "TRIM(COALESCE(duplicate_entry_info, '')) COLLATE NOCASE",
+            ),
+        ),
+    )
+    removed_by_source: dict[int, int] = {}
+    affected_sources: set[int] = set()
+    for table_name, _count_column, identity_columns in configurations:
+        partition = ", ".join(identity_columns)
+        duplicate_rows = connection.execute(
+            f"""
+            SELECT id, source_file_id
+            FROM (
+                SELECT id,
+                       source_file_id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY {partition}
+                           ORDER BY id
+                       ) AS duplicate_number
+                FROM {table_name}
+            )
+            WHERE duplicate_number > 1
+            """
+        ).fetchall()
+        if not duplicate_rows:
+            continue
+        connection.executemany(
+            f"DELETE FROM {table_name} WHERE id = ?",
+            ((row["id"],) for row in duplicate_rows),
+        )
+        for row in duplicate_rows:
+            source_file_id = int(row["source_file_id"])
+            affected_sources.add(source_file_id)
+            removed_by_source[source_file_id] = (
+                removed_by_source.get(source_file_id, 0) + 1
+            )
+
+    for source_file_id, removed_count in removed_by_source.items():
+        connection.execute(
+            """
+            UPDATE source_files
+            SET duplicate_summary_rows_removed =
+                    duplicate_summary_rows_removed + ?
+            WHERE id = ?
+            """,
+            (removed_count, source_file_id),
+        )
+    for source_file_id in affected_sources:
+        connection.execute(
+            """
+            UPDATE source_files
+            SET acknowledgement_count = (
+                    SELECT COUNT(DISTINCT acknowledgement_no)
+                    FROM account_summaries
+                    WHERE source_file_id = source_files.id
+                ),
+                account_row_count = (
+                    SELECT COUNT(*) FROM account_summaries
+                    WHERE source_file_id = source_files.id
+                ),
+                bank_row_count = (
+                    SELECT COUNT(*) FROM bank_summaries
+                    WHERE source_file_id = source_files.id
+                ),
+                partial_bank_row_count = (
+                    SELECT COUNT(*) FROM partial_bank_summaries
+                    WHERE source_file_id = source_files.id
+                )
+            WHERE id = ?
+            """,
+            (source_file_id,),
+        )
+
+
 def initialize_database(
     database_path: str | Path = DEFAULT_DATABASE_PATH,
 ) -> Path:
@@ -170,6 +416,18 @@ def initialize_database(
                 account_row_count INTEGER NOT NULL DEFAULT 0,
                 bank_row_count INTEGER NOT NULL DEFAULT 0,
                 partial_bank_row_count INTEGER NOT NULL DEFAULT 0,
+                content_sha256 TEXT,
+                duplicate_of_source_file_id INTEGER
+                    REFERENCES source_files(id) ON DELETE SET NULL,
+                main_rows_read INTEGER NOT NULL DEFAULT 0,
+                duplicate_transaction_rows_removed INTEGER NOT NULL DEFAULT 0,
+                other_rows_read INTEGER NOT NULL DEFAULT 0,
+                duplicate_other_rows_removed INTEGER NOT NULL DEFAULT 0,
+                duplicate_summary_rows_removed INTEGER NOT NULL DEFAULT 0,
+                fast_duplicate_audit_version TEXT,
+                fast_duplicate_rows_found INTEGER NOT NULL DEFAULT 0,
+                fast_duplicate_audit_error TEXT,
+                fast_duplicate_reprocessed_version TEXT,
                 error_message TEXT
             );
 
@@ -240,6 +498,8 @@ def initialize_database(
                 ON source_files(status, attempts, id);
             CREATE INDEX IF NOT EXISTS idx_account_ack
                 ON account_summaries(acknowledgement_no);
+            CREATE INDEX IF NOT EXISTS idx_account_source_file
+                ON account_summaries(source_file_id);
             CREATE INDEX IF NOT EXISTS idx_account_status
                 ON account_summaries(status);
             CREATE INDEX IF NOT EXISTS idx_account_bank
@@ -248,19 +508,20 @@ def initialize_database(
                 ON account_summaries(account_number);
             CREATE INDEX IF NOT EXISTS idx_bank_ack
                 ON bank_summaries(acknowledgement_no);
+            CREATE INDEX IF NOT EXISTS idx_bank_source_file
+                ON bank_summaries(source_file_id);
             CREATE INDEX IF NOT EXISTS idx_bank_status
                 ON bank_summaries(status);
             CREATE INDEX IF NOT EXISTS idx_partial_ack
                 ON partial_bank_summaries(acknowledgement_no);
-
-            INSERT INTO schema_metadata(key, value)
-            VALUES ('schema_version', '1')
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            CREATE INDEX IF NOT EXISTS idx_partial_source_file
+                ON partial_bank_summaries(source_file_id);
 
             INSERT OR IGNORE INTO worker_state(id, is_running)
             VALUES (1, 0);
             """
         )
+        _apply_schema_migrations(connection)
         connection.commit()
     finally:
         connection.close()
@@ -318,12 +579,46 @@ def _record_to_values(
     return tuple(values)
 
 
+def _logical_key(value: Any) -> str:
+    return _clean_text(value).casefold()
+
+
+def _deduplicate_summary_values(
+    values: Sequence[tuple[Any, ...]],
+    *,
+    key_positions: Sequence[int],
+    label: str,
+) -> tuple[list[tuple[Any, ...]], int]:
+    """Drop identical logical summary rows and reject conflicting repeats."""
+    unique_rows: list[tuple[Any, ...]] = []
+    seen: dict[tuple[str, ...], tuple[Any, ...]] = {}
+    duplicates_removed = 0
+    for row in values:
+        key = tuple(_logical_key(row[position]) for position in key_positions)
+        comparison = tuple(
+            _logical_key(value) for value in row[1:-1]
+        )  # Ignore source id and generated timestamp.
+        previous = seen.get(key)
+        if previous is None:
+            seen[key] = comparison
+            unique_rows.append(row)
+            continue
+        if previous != comparison:
+            raise ValueError(
+                f"Conflicting duplicate {label} row for key: "
+                f"{' / '.join(key)}"
+            )
+        duplicates_removed += 1
+    return unique_rows, duplicates_removed
+
+
 def save_file_summaries(
     database_path: str | Path,
     source_file_id: int,
     summaries: Mapping[str, Sequence[Mapping[str, Any]]],
     *,
     duration_seconds: float,
+    processing_audit: Mapping[str, Any] | None = None,
 ) -> dict[str, int]:
     """Atomically replace one source file's summary rows and mark it completed."""
     account_records = list(summaries.get("Account Wise Summary", ()))
@@ -331,18 +626,37 @@ def save_file_summaries(
     partial_records = list(summaries.get("Partial Bank Wise Summary", ()))
     created_at = utc_now()
 
-    account_values = [
+    account_values_raw = [
         (source_file_id, *_record_to_values(record, ACCOUNT_COLUMNS), created_at)
         for record in account_records
     ]
-    bank_values = [
+    bank_values_raw = [
         (source_file_id, *_record_to_values(record, BANK_COLUMNS), created_at)
         for record in bank_records
     ]
-    partial_values = [
+    partial_values_raw = [
         (source_file_id, *_record_to_values(record, BANK_COLUMNS), created_at)
         for record in partial_records
     ]
+    account_values, account_duplicates = _deduplicate_summary_values(
+        account_values_raw,
+        key_positions=(1, 2, 3, 4, 5, 6, 7, 8, 9),
+        label="account",
+    )
+    bank_values, bank_duplicates = _deduplicate_summary_values(
+        bank_values_raw,
+        key_positions=(1, 2),
+        label="bank",
+    )
+    partial_values, partial_duplicates = _deduplicate_summary_values(
+        partial_values_raw,
+        key_positions=(1, 2),
+        label="partial-bank",
+    )
+    duplicate_summary_rows_removed = (
+        account_duplicates + bank_duplicates + partial_duplicates
+    )
+    audit = dict(processing_audit or {})
     acknowledgements = {
         values[1]
         for values in account_values
@@ -364,6 +678,24 @@ def save_file_summaries(
                 "DELETE FROM partial_bank_summaries WHERE source_file_id = ?",
                 (source_file_id,),
             )
+
+            for acknowledgement in sorted(acknowledgements):
+                owner = connection.execute(
+                    """
+                    SELECT source_file_id
+                    FROM account_summaries
+                    WHERE acknowledgement_no = ? COLLATE NOCASE
+                      AND source_file_id <> ?
+                    LIMIT 1
+                    """,
+                    (acknowledgement, source_file_id),
+                ).fetchone()
+                if owner is not None:
+                    raise ValueError(
+                        "Acknowledgement "
+                        f"{acknowledgement} is already stored from source file "
+                        f"ID {owner['source_file_id']}"
+                    )
 
             if account_values:
                 connection.executemany(
@@ -438,6 +770,13 @@ def save_file_summaries(
                     account_row_count = ?,
                     bank_row_count = ?,
                     partial_bank_row_count = ?,
+                    main_rows_read = ?,
+                    duplicate_transaction_rows_removed = ?,
+                    other_rows_read = ?,
+                    duplicate_other_rows_removed = ?,
+                    duplicate_summary_rows_removed = ?,
+                    duplicate_of_source_file_id = NULL,
+                    fast_duplicate_reprocessed_version = ?,
                     error_message = NULL
                 WHERE id = ?
                 """,
@@ -448,6 +787,15 @@ def save_file_summaries(
                     len(account_values),
                     len(bank_values),
                     len(partial_values),
+                    int(audit.get("main_rows_read", 0) or 0),
+                    int(
+                        audit.get("duplicate_transaction_rows_removed", 0)
+                        or 0
+                    ),
+                    int(audit.get("other_rows_read", 0) or 0),
+                    int(audit.get("duplicate_other_rows_removed", 0) or 0),
+                    duplicate_summary_rows_removed,
+                    audit.get("duplicate_processing_version"),
                     source_file_id,
                 ),
             )
@@ -456,6 +804,13 @@ def save_file_summaries(
             "account": len(account_values),
             "bank": len(bank_values),
             "partial": len(partial_values),
+            "duplicate_summary_rows_removed": duplicate_summary_rows_removed,
+            "duplicate_transaction_rows_removed": int(
+                audit.get("duplicate_transaction_rows_removed", 0) or 0
+            ),
+            "duplicate_other_rows_removed": int(
+                audit.get("duplicate_other_rows_removed", 0) or 0
+            ),
         }
     finally:
         connection.close()
@@ -484,6 +839,58 @@ def mark_file_failed(
                     utc_now(),
                     duration_seconds,
                     error_message[:4000],
+                    source_file_id,
+                ),
+            )
+    finally:
+        connection.close()
+
+
+def mark_file_as_duplicate(
+    database_path: str | Path,
+    source_file_id: int,
+    canonical_source_file_id: int,
+    content_sha256: str,
+) -> None:
+    """Record an exact workbook copy without storing its summaries again."""
+    if source_file_id == canonical_source_file_id:
+        raise ValueError("A source file cannot be a duplicate of itself")
+    connection = connect_database(database_path)
+    try:
+        with connection:
+            for table_name in (
+                "account_summaries",
+                "bank_summaries",
+                "partial_bank_summaries",
+            ):
+                connection.execute(
+                    f"DELETE FROM {table_name} WHERE source_file_id = ?",
+                    (source_file_id,),
+                )
+            connection.execute(
+                """
+                UPDATE source_files
+                SET status = 'completed',
+                    completed_at = ?,
+                    duration_seconds = 0,
+                    acknowledgement_count = 0,
+                    account_row_count = 0,
+                    bank_row_count = 0,
+                    partial_bank_row_count = 0,
+                    content_sha256 = ?,
+                    duplicate_of_source_file_id = ?,
+                    main_rows_read = 0,
+                    duplicate_transaction_rows_removed = 0,
+                    other_rows_read = 0,
+                    duplicate_other_rows_removed = 0,
+                    duplicate_summary_rows_removed = 0,
+                    error_message = NULL
+                WHERE id = ?
+                """,
+                (
+                    utc_now(),
+                    content_sha256,
+                    canonical_source_file_id,
                     source_file_id,
                 ),
             )
@@ -557,6 +964,21 @@ def query_progress(database_path: str | Path) -> dict[str, Any]:
                 COALESCE(SUM(bank_row_count), 0) AS bank_rows,
                 COALESCE(SUM(partial_bank_row_count), 0) AS partial_rows
             FROM source_files
+            """
+        ).fetchone()
+        duplicate_audit = connection.execute(
+            """
+            SELECT
+                COALESCE(SUM(CASE
+                    WHEN duplicate_of_source_file_id IS NOT NULL
+                    THEN 1 ELSE 0 END), 0) AS duplicate_files_skipped,
+                COALESCE(SUM(duplicate_transaction_rows_removed), 0)
+                    AS transaction_rows_removed,
+                COALESCE(SUM(duplicate_other_rows_removed), 0)
+                    AS other_sheet_rows_removed,
+                COALESCE(SUM(duplicate_summary_rows_removed), 0)
+                    AS summary_rows_removed
+            FROM source_files
             WHERE status = 'completed'
             """
         ).fetchone()
@@ -571,6 +993,7 @@ def query_progress(database_path: str | Path) -> dict[str, Any]:
                 "percent": percent,
             },
             "summaries": dict(totals),
+            "duplicates": dict(duplicate_audit),
             "worker": dict(worker) if worker else {},
         }
     finally:

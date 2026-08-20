@@ -139,7 +139,7 @@ START_OVERNIGHT_AND_DASHBOARD.bat
 This will:
 - Process all workbooks in `C:\Users\admin\Desktop\bank_trails`
 - Create a consolidated SQLite database
-- Remove duplicate transactions automatically
+- Exclude duplicate credited amounts while preserving debit/recovery rows
 - Generate a summary dashboard
 - Export results to Excel
 
@@ -162,7 +162,8 @@ The batch processor automatically deduplicates transactions matched by:
 When duplicates are found:
 - First occurrence is retained
 - Subsequent occurrences are logged in **Duplicate Entry Info**
-- Disputed amounts are accumulated
+- Only subsequent credited amounts are excluded from **Total Credited Amount**
+- Debit totals and other-sheet/recovery matching continue to use every row
 - Audit counts are recorded in SQLite
 
 For a complete reprocessing without cache:
@@ -292,10 +293,10 @@ Solution: Verify input directory path in configuration
          Check that Excel file is in correct location
 ```
 
-**Issue**: Duplicate transactions not removed
+**Issue**: Duplicate credits are still counted
 ```
-Solution: Run REPROCESS_ALL_STRICT_ONCE.bat for full rebuild
-         Check deduplication rules in summary_database.py
+Solution: Run REPROCESS_ALL_STRICT_ONCE.bat for a full credit-only rebuild
+         Check the duplicate identity helpers in app_account.py
 ```
 
 **Issue**: Flask port already in use

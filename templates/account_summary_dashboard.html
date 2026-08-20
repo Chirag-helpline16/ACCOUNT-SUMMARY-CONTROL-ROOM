@@ -109,7 +109,7 @@
 
         .progress-panel {
             display: grid;
-            grid-template-columns: minmax(260px, 1.2fr) repeat(4, minmax(120px, .6fr));
+            grid-template-columns: minmax(260px, 1.2fr) repeat(5, minmax(110px, .55fr));
             gap: 18px;
             align-items: center;
             padding: 19px 21px;
@@ -442,12 +442,662 @@
             .failure-item { grid-template-columns: 1fr; gap: 5px; }
         }
     </style>
+
+    <style id="visual-redesign">
+        :root {
+            --ink: #191a23;
+            --ink-soft: #30313d;
+            --muted: #71717f;
+            --line: rgba(31, 31, 42, .11);
+            --line-strong: rgba(31, 31, 42, .17);
+            --canvas: #f3f1ec;
+            --panel: rgba(255, 255, 255, .88);
+            --panel-solid: #fffefa;
+            --navy: #1d1d2b;
+            --blue: #635bdf;
+            --blue-strong: #5047cd;
+            --blue-soft: #efedff;
+            --green: #13795f;
+            --green-soft: #e8f5ef;
+            --amber: #a76416;
+            --amber-soft: #fbf0dc;
+            --red: #b63e50;
+            --red-soft: #f9e9ec;
+            --shadow: 0 18px 55px rgba(39, 38, 55, .07), 0 2px 8px rgba(39, 38, 55, .035);
+            --shadow-hover: 0 24px 65px rgba(39, 38, 55, .11), 0 4px 12px rgba(39, 38, 55, .05);
+            --ease-out: cubic-bezier(.22, 1, .36, 1);
+        }
+
+        html { scroll-behavior: smooth; }
+
+        body {
+            position: relative;
+            min-height: 100vh;
+            color: var(--ink);
+            background:
+                radial-gradient(circle at 5% 16%, rgba(99, 91, 223, .08), transparent 24rem),
+                radial-gradient(circle at 94% 10%, rgba(236, 138, 92, .07), transparent 26rem),
+                var(--canvas);
+            font-family: "Segoe UI Variable", "Aptos", "Segoe UI", Inter, Arial, sans-serif;
+            font-size: 14px;
+        }
+
+        body::before {
+            position: fixed;
+            z-index: -1;
+            inset: 0;
+            background-image: radial-gradient(rgba(29, 29, 43, .15) .6px, transparent .6px);
+            background-size: 22px 22px;
+            opacity: .12;
+            pointer-events: none;
+            content: "";
+            -webkit-mask-image: linear-gradient(to bottom, #000, transparent 72%);
+            mask-image: linear-gradient(to bottom, #000, transparent 72%);
+        }
+
+        ::selection { background: rgba(99, 91, 223, .22); color: var(--ink); }
+
+        :focus-visible {
+            outline: 3px solid rgba(99, 91, 223, .28);
+            outline-offset: 2px;
+        }
+
+        .topbar {
+            position: relative;
+            isolation: isolate;
+            min-height: 158px;
+            overflow: hidden;
+            align-items: flex-start;
+            padding: 30px clamp(20px, 4vw, 64px) 64px;
+            background: #1b1b29;
+            box-shadow: inset 0 -1px rgba(255, 255, 255, .07);
+        }
+
+        .topbar::before,
+        .topbar::after {
+            position: absolute;
+            z-index: -1;
+            border-radius: 999px;
+            pointer-events: none;
+            content: "";
+            filter: blur(2px);
+        }
+
+        .topbar::before {
+            width: min(680px, 58vw);
+            height: min(680px, 58vw);
+            top: -510px;
+            right: 5%;
+            border: 1px solid rgba(190, 184, 255, .22);
+            box-shadow:
+                0 0 110px rgba(99, 91, 223, .27),
+                inset 0 0 100px rgba(99, 91, 223, .14);
+            animation: ambientDrift 12s var(--ease-out) infinite alternate;
+        }
+
+        .topbar::after {
+            width: 260px;
+            height: 260px;
+            right: -90px;
+            bottom: -220px;
+            background: rgba(231, 126, 84, .26);
+            box-shadow: 0 0 100px 35px rgba(231, 126, 84, .12);
+            animation: ambientDrift 10s var(--ease-out) 1s infinite alternate-reverse;
+        }
+
+        .brand {
+            position: relative;
+            z-index: 1;
+            gap: 16px;
+            animation: headerReveal .75s var(--ease-out) both;
+        }
+
+        .brand-mark {
+            position: relative;
+            width: 50px;
+            height: 50px;
+            overflow: hidden;
+            border-color: rgba(255, 255, 255, .14);
+            border-radius: 15px;
+            background: linear-gradient(145deg, rgba(255, 255, 255, .14), rgba(255, 255, 255, .04));
+            box-shadow: inset 0 1px rgba(255, 255, 255, .16), 0 12px 30px rgba(0, 0, 0, .16);
+            color: #fff;
+            font-size: 15px;
+            letter-spacing: -.02em;
+        }
+
+        .brand-mark::after {
+            position: absolute;
+            width: 26px;
+            height: 60px;
+            top: -8px;
+            left: -38px;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .2), transparent);
+            content: "";
+            transform: skewX(-18deg);
+            animation: markSheen 6s ease-in-out 1.4s infinite;
+        }
+
+        .brand-overline {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            margin-bottom: 5px;
+            color: #a9a6c3;
+            font-size: 10px;
+            font-weight: 750;
+            letter-spacing: .15em;
+            text-transform: uppercase;
+        }
+
+        .brand-overline span {
+            width: 16px;
+            height: 1px;
+            background: #7c73f2;
+        }
+
+        h1 {
+            color: #fffefa;
+            font-size: clamp(21px, 2.1vw, 29px);
+            font-weight: 720;
+            letter-spacing: -.035em;
+        }
+
+        .subtitle { margin-top: 6px; color: #aaaabd; font-size: 12px; }
+
+        .worker-pill {
+            position: relative;
+            z-index: 1;
+            padding: 10px 14px;
+            border-color: rgba(255, 255, 255, .12);
+            background: rgba(255, 255, 255, .055);
+            box-shadow: inset 0 1px rgba(255, 255, 255, .07);
+            color: #d9d8e6;
+            -webkit-backdrop-filter: blur(14px);
+            backdrop-filter: blur(14px);
+            animation: headerReveal .75s var(--ease-out) .12s both;
+        }
+
+        .pulse {
+            width: 8px;
+            height: 8px;
+            background: #76768a;
+            box-shadow: 0 0 0 4px rgba(118, 118, 138, .12);
+        }
+
+        .worker-pill.running .pulse {
+            background: #66d5ad;
+            box-shadow: 0 0 0 4px rgba(102, 213, 173, .12);
+            animation: statusPulse 2.2s ease-out infinite;
+        }
+
+        main {
+            position: relative;
+            z-index: 2;
+            width: min(1760px, 100%);
+            margin-top: -38px;
+            padding: 0 clamp(14px, 3vw, 44px) 56px;
+        }
+
+        .progress-panel,
+        .filters,
+        .table-panel,
+        .failures-panel {
+            border-color: var(--line);
+            border-radius: 20px;
+            background: var(--panel);
+            box-shadow: var(--shadow);
+            -webkit-backdrop-filter: blur(18px);
+            backdrop-filter: blur(18px);
+        }
+
+        .progress-panel {
+            gap: 22px;
+            padding: 21px 24px;
+            box-shadow: 0 25px 70px rgba(23, 22, 36, .13), 0 2px 8px rgba(23, 22, 36, .05);
+            animation: riseIn .72s var(--ease-out) .12s both;
+        }
+
+        .eyebrow {
+            color: var(--blue);
+            font-size: 10px;
+            letter-spacing: .13em;
+        }
+
+        .progress-title { margin: 5px 0 10px; font-size: 13px; }
+        .progress-title strong { color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+
+        .progress-track {
+            height: 7px;
+            overflow: visible;
+            background: #e8e6e1;
+            box-shadow: inset 0 1px 2px rgba(29, 29, 43, .08);
+        }
+
+        .progress-fill {
+            position: relative;
+            overflow: hidden;
+            background: linear-gradient(90deg, var(--blue-strong), #8078ee);
+            box-shadow: 0 4px 12px rgba(99, 91, 223, .22);
+            transition: width .8s var(--ease-out);
+        }
+
+        .progress-fill::after {
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .48), transparent);
+            content: "";
+            transform: translateX(-100%);
+            animation: progressSheen 2.7s ease-in-out infinite;
+        }
+
+        .current-file { margin-top: 9px; color: var(--muted); }
+
+        .mini-stat { padding-left: 20px; border-left-color: var(--line); }
+
+        .mini-stat strong {
+            color: var(--ink);
+            font-size: 22px;
+            font-weight: 720;
+            letter-spacing: -.035em;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .mini-stat span { margin-top: 3px; color: var(--muted); }
+
+        .filters {
+            margin-top: 16px;
+            padding: 17px;
+            animation: riseIn .72s var(--ease-out) .2s both;
+        }
+
+        .field label {
+            margin: 0 0 7px 2px;
+            color: #666573;
+            font-size: 10px;
+            letter-spacing: .09em;
+        }
+
+        .control,
+        .search-wrap input {
+            height: 44px;
+            border-color: var(--line-strong);
+            border-radius: 11px;
+            background: rgba(255, 255, 255, .75);
+            color: var(--ink);
+            padding: 0 13px;
+            transition: border-color .2s, box-shadow .2s, background .2s, transform .2s;
+        }
+
+        .control:hover,
+        .search-wrap input:hover { border-color: rgba(99, 91, 223, .34); }
+
+        .control:focus,
+        .search-wrap input:focus {
+            border-color: rgba(99, 91, 223, .6);
+            background: #fff;
+            box-shadow: 0 0 0 4px rgba(99, 91, 223, .1);
+        }
+
+        .suggestions {
+            border-color: var(--line);
+            border-radius: 14px;
+            background: rgba(255, 255, 255, .96);
+            box-shadow: 0 24px 60px rgba(29, 29, 43, .15);
+            -webkit-backdrop-filter: blur(18px);
+            backdrop-filter: blur(18px);
+            animation: suggestionIn .2s var(--ease-out) both;
+        }
+
+        .suggestion { border-bottom-color: var(--line); background: transparent; }
+        .suggestion:hover,
+        .suggestion:focus { background: var(--blue-soft); }
+
+        .btn {
+            height: 44px;
+            border-radius: 11px;
+            font-size: 13px;
+            font-weight: 700;
+            transition: transform .25s var(--ease-out), background .2s, color .2s, box-shadow .25s var(--ease-out);
+        }
+
+        .btn:hover { transform: translateY(-2px); }
+        .btn:active { transform: translateY(0) scale(.98); }
+
+        .btn-primary {
+            background: var(--ink);
+            box-shadow: 0 9px 22px rgba(25, 26, 35, .18);
+        }
+
+        .btn-primary::after {
+            content: "↗";
+            font-size: 15px;
+            transition: transform .25s var(--ease-out);
+        }
+
+        .btn-primary:hover {
+            background: var(--blue-strong);
+            box-shadow: 0 12px 26px rgba(80, 71, 205, .25);
+        }
+
+        .btn-primary:hover::after { transform: translate(2px, -2px); }
+        .btn-soft { background: #eeece7; color: #494854; }
+        .btn-soft:hover { background: #e5e1fa; color: var(--blue-strong); }
+        .btn:disabled { cursor: not-allowed; opacity: .42; transform: none; }
+
+        .kpis {
+            gap: 11px;
+            margin: 16px 0;
+            animation: riseIn .72s var(--ease-out) .28s both;
+        }
+
+        .kpi {
+            position: relative;
+            overflow: hidden;
+            padding: 17px 18px 18px;
+            border-color: var(--line);
+            border-radius: 17px;
+            background: rgba(255, 255, 255, .74);
+            box-shadow: 0 8px 28px rgba(39, 38, 55, .035);
+            transition: transform .3s var(--ease-out), box-shadow .3s var(--ease-out), background .3s;
+        }
+
+        .kpi::before {
+            position: absolute;
+            width: 54%;
+            height: 2px;
+            top: 0;
+            left: 18px;
+            background: linear-gradient(90deg, var(--blue), transparent);
+            opacity: 0;
+            content: "";
+            transform: scaleX(.35);
+            transform-origin: left;
+            transition: opacity .3s, transform .45s var(--ease-out);
+        }
+
+        .kpi:hover {
+            z-index: 1;
+            background: rgba(255, 255, 255, .96);
+            box-shadow: var(--shadow-hover);
+            transform: translateY(-4px);
+        }
+
+        .kpi:hover::before { opacity: 1; transform: scaleX(1); }
+
+        .kpi span { color: #73717d; font-size: 10px; letter-spacing: .075em; }
+
+        .kpi strong {
+            margin-top: 7px;
+            color: var(--ink) !important;
+            font-size: clamp(18px, 1.55vw, 24px);
+            font-weight: 720;
+            letter-spacing: -.04em;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .kpi.credit::after,
+        .kpi.updated::after,
+        .kpi.open::after {
+            position: absolute;
+            width: 9px;
+            height: 9px;
+            top: 18px;
+            right: 17px;
+            border-radius: 50%;
+            content: "";
+        }
+
+        .kpi.credit::after { background: var(--blue); box-shadow: 0 0 0 4px rgba(99, 91, 223, .1); }
+        .kpi.updated::after { background: var(--green); box-shadow: 0 0 0 4px rgba(19, 121, 95, .1); }
+        .kpi.open::after { background: var(--red); box-shadow: 0 0 0 4px rgba(182, 62, 80, .1); }
+
+        .value-pop { animation: valuePop .42s var(--ease-out) both; }
+
+        .table-panel {
+            animation: riseIn .76s var(--ease-out) .36s both;
+        }
+
+        .table-toolbar { padding: 12px 14px; border-bottom-color: var(--line); }
+        .tabs { gap: 3px; }
+
+        .tab {
+            position: relative;
+            padding: 10px 13px;
+            border-radius: 10px;
+            color: #666573;
+            font-size: 12px;
+            transition: color .2s, background .2s, transform .2s var(--ease-out);
+        }
+
+        .tab::after {
+            position: absolute;
+            height: 2px;
+            right: 12px;
+            bottom: 3px;
+            left: 12px;
+            border-radius: 2px;
+            background: var(--blue);
+            content: "";
+            transform: scaleX(0);
+            transition: transform .35s var(--ease-out);
+        }
+
+        .tab:hover { background: #f2f0eb; color: var(--ink); }
+        .tab.active { background: var(--blue-soft); color: var(--blue-strong); }
+        .tab.active::after { transform: scaleX(1); }
+
+        .record-count { color: var(--muted); }
+
+        .table-wrap {
+            max-height: 62vh;
+            scrollbar-color: #b8b4c7 transparent;
+            scrollbar-width: thin;
+        }
+
+        .table-wrap::-webkit-scrollbar { width: 9px; height: 9px; }
+        .table-wrap::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: #b8b4c7; background-clip: padding-box; }
+        .table-wrap::-webkit-scrollbar-corner { background: transparent; }
+
+        table { min-width: 1320px; }
+
+        th {
+            padding: 13px 13px;
+            border-bottom-color: var(--line-strong);
+            background: rgba(241, 239, 234, .96);
+            color: #555461;
+            font-size: 10px;
+            font-weight: 780;
+            letter-spacing: .055em;
+            -webkit-backdrop-filter: blur(14px);
+            backdrop-filter: blur(14px);
+        }
+
+        td {
+            padding: 12px 13px;
+            border-bottom-color: rgba(31, 31, 42, .075);
+            color: #3b3b47;
+            font-size: 12px;
+            transition: background .18s, box-shadow .18s;
+        }
+
+        tbody tr:nth-child(even) td { background: rgba(248, 247, 243, .72); }
+        tbody tr:hover td { background: #f2f0ff; }
+        tbody tr:hover td:first-child { box-shadow: inset 3px 0 var(--blue); }
+
+        tbody.is-entering tr {
+            animation: rowReveal .48s var(--ease-out) both;
+            animation-delay: var(--row-delay, 0ms);
+        }
+
+        .amount { color: #292934; font-weight: 650; font-variant-numeric: tabular-nums; }
+        .id-cell { color: #545362; font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace; font-size: 11px; }
+        .long-cell { min-width: 220px; max-width: 290px; line-height: 1.5; }
+
+        .status {
+            min-width: 82px;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 9px;
+            font-size: 10px;
+            letter-spacing: .045em;
+        }
+
+        .status::before {
+            width: 6px;
+            height: 6px;
+            flex: 0 0 auto;
+            border-radius: 50%;
+            background: currentColor;
+            content: "";
+            box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 12%, transparent);
+        }
+
+        .status.pending { color: var(--red); background: var(--red-soft); }
+        .status.partial { color: var(--amber); background: var(--amber-soft); }
+        .status.completed,
+        .status.complete { color: var(--green); background: var(--green-soft); }
+
+        .loading-row td { position: relative; padding: 55px 18px; color: var(--muted); }
+
+        .loading-row td::before {
+            display: inline-block;
+            width: 13px;
+            height: 13px;
+            margin-right: 9px;
+            border: 2px solid rgba(99, 91, 223, .18);
+            border-top-color: var(--blue);
+            border-radius: 50%;
+            vertical-align: -2px;
+            content: "";
+            animation: spin .75s linear infinite;
+        }
+
+        .pagination { padding: 12px 15px; border-top-color: var(--line); }
+        .page-label { color: var(--muted); font-size: 12px; }
+
+        .failures-panel {
+            animation: riseIn .72s var(--ease-out) .44s both;
+        }
+
+        .failures-panel summary { color: var(--ink-soft); }
+        .failures-panel summary span:nth-child(2) { margin-left: auto; }
+        .failures-panel summary::after {
+            margin-left: 10px;
+            color: var(--muted);
+            content: "+";
+            font-size: 18px;
+            font-weight: 400;
+            transition: transform .3s var(--ease-out);
+        }
+        .failures-panel[open] summary::after { transform: rotate(45deg); }
+        .failure-list { border-top-color: var(--line); animation: suggestionIn .28s var(--ease-out) both; }
+
+        .toast {
+            right: 24px;
+            bottom: 24px;
+            padding: 13px 16px;
+            border: 1px solid rgba(255, 255, 255, .1);
+            border-radius: 13px;
+            background: #1d1d2b;
+            box-shadow: 0 20px 55px rgba(24, 24, 34, .28);
+            transform: translateY(14px) scale(.97);
+            transition: opacity .3s, transform .4s var(--ease-out);
+        }
+
+        .toast.show { transform: translateY(0) scale(1); }
+
+        @keyframes headerReveal {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes riseIn {
+            from { opacity: 0; transform: translateY(22px) scale(.988); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        @keyframes rowReveal {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes valuePop {
+            0% { opacity: .45; transform: translateY(6px); }
+            100% { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes ambientDrift {
+            to { transform: translate3d(-24px, 16px, 0) scale(1.04); }
+        }
+
+        @keyframes markSheen {
+            0%, 68% { left: -38px; }
+            82%, 100% { left: 68px; }
+        }
+
+        @keyframes statusPulse {
+            0% { box-shadow: 0 0 0 0 rgba(102, 213, 173, .34); }
+            70%, 100% { box-shadow: 0 0 0 8px rgba(102, 213, 173, 0); }
+        }
+
+        @keyframes progressSheen {
+            0%, 30% { transform: translateX(-100%); }
+            65%, 100% { transform: translateX(100%); }
+        }
+
+        @keyframes suggestionIn {
+            from { opacity: 0; transform: translateY(-6px) scale(.985); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        @media (max-width: 1100px) {
+            .topbar { min-height: 170px; }
+            main { margin-top: -42px; }
+        }
+
+        @media (max-width: 680px) {
+            .topbar { min-height: 230px; padding-bottom: 78px; }
+            main { margin-top: -52px; }
+            .progress-panel {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 12px;
+                padding: 18px;
+            }
+            .progress-copy { margin-bottom: 2px; }
+            .mini-stat {
+                min-width: 0;
+                padding: 10px 11px;
+                border: 0;
+                border-radius: 12px;
+                background: rgba(244, 242, 237, .9);
+            }
+            .mini-stat strong { font-size: 19px; }
+            .mini-stat span { display: block; overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+            .kpi { padding: 15px; }
+            .table-toolbar { padding: 11px; }
+            .tab { white-space: nowrap; }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            html { scroll-behavior: auto; }
+            *, *::before, *::after {
+                scroll-behavior: auto !important;
+                animation-duration: .01ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: .01ms !important;
+            }
+        }
+    </style>
 </head>
 <body>
     <header class="topbar">
         <div class="brand">
             <div class="brand-mark">AS</div>
             <div>
+                <div class="brand-overline"><span></span> Financial operations</div>
                 <h1>Account Summary Control Room</h1>
                 <div class="subtitle">Consolidated SQLite view · {{ database_name }}</div>
             </div>
@@ -475,6 +1125,7 @@
             <div class="mini-stat"><strong id="filesPending">0</strong><span>Files pending</span></div>
             <div class="mini-stat"><strong id="filesFailed">0</strong><span>Files failed</span></div>
             <div class="mini-stat"><strong id="acksStored">0</strong><span>ACKs stored</span></div>
+            <div class="mini-stat" id="duplicatesStat" title="Repeated credited amounts excluded from credit totals"><strong id="duplicatesRemoved">0</strong><span>Duplicate credits excluded</span></div>
         </section>
 
         <section class="filters" aria-label="Summary filters">
@@ -585,9 +1236,41 @@
             maximumFractionDigits: 2
         });
         const integerFormatter = new Intl.NumberFormat("en-IN");
+        const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
         const elements = Object.fromEntries(
             Array.from(document.querySelectorAll("[id]")).map(element => [element.id, element])
         );
+
+        function animateMetric(element, value, formatter, duration = 650) {
+            const endValue = Number(value) || 0;
+            const storedValue = Number(element.dataset.metricValue);
+            const startValue = Number.isFinite(storedValue) ? storedValue : 0;
+            element.dataset.metricValue = String(endValue);
+            window.cancelAnimationFrame(element.metricAnimation);
+
+            if (prefersReducedMotion || startValue === endValue) {
+                element.textContent = formatter(endValue);
+                return;
+            }
+
+            element.classList.remove("value-pop");
+            void element.offsetWidth;
+            element.classList.add("value-pop");
+            const startedAt = performance.now();
+
+            const frame = now => {
+                const progress = Math.min(1, (now - startedAt) / duration);
+                const eased = 1 - Math.pow(1 - progress, 4);
+                element.textContent = formatter(startValue + ((endValue - startValue) * eased));
+                if (progress < 1) {
+                    element.metricAnimation = window.requestAnimationFrame(frame);
+                } else {
+                    element.textContent = formatter(endValue);
+                }
+            };
+
+            element.metricAnimation = window.requestAnimationFrame(frame);
+        }
 
         function showToast(message) {
             elements.toast.textContent = message;
@@ -625,12 +1308,21 @@
                 const files = data.files;
                 const worker = data.worker || {};
                 elements.progressFill.style.width = `${files.percent}%`;
-                elements.progressPercent.textContent = `${files.percent.toFixed(1)}%`;
+                animateMetric(elements.progressPercent, files.percent, value => `${value.toFixed(1)}%`, 520);
                 elements.progressLabel.textContent = `${integerFormatter.format(files.processed)} of ${integerFormatter.format(files.total)} files processed`;
-                elements.filesCompleted.textContent = integerFormatter.format(files.completed);
-                elements.filesPending.textContent = integerFormatter.format(files.pending + files.processing);
-                elements.filesFailed.textContent = integerFormatter.format(files.failed);
-                elements.acksStored.textContent = integerFormatter.format(data.summaries.acknowledgements || 0);
+                animateMetric(elements.filesCompleted, files.completed, value => integerFormatter.format(Math.round(value)));
+                animateMetric(elements.filesPending, files.pending + files.processing, value => integerFormatter.format(Math.round(value)));
+                animateMetric(elements.filesFailed, files.failed, value => integerFormatter.format(Math.round(value)));
+                animateMetric(elements.acksStored, data.summaries.acknowledgements || 0, value => integerFormatter.format(Math.round(value)));
+                const duplicates = data.duplicates || {};
+                const duplicateRowsRemoved =
+                    (duplicates.transaction_rows_removed || 0);
+                animateMetric(elements.duplicatesRemoved, duplicateRowsRemoved, value => integerFormatter.format(Math.round(value)));
+                elements.duplicatesStat.title =
+                    `${integerFormatter.format(duplicates.transaction_rows_removed || 0)} duplicate credited amounts excluded; `
+                    + `${integerFormatter.format(duplicates.other_sheet_rows_removed || 0)} recovery-sheet rows removed (legacy); `
+                    + `${integerFormatter.format(duplicates.summary_rows_removed || 0)} identical stored summary rows removed; `
+                    + `${integerFormatter.format(duplicates.duplicate_files_skipped || 0)} exact workbook copies skipped`;
                 const running = Boolean(worker.is_running);
                 elements.workerPill.classList.toggle("running", running);
                 elements.workerState.textContent = running ? "Worker running" : "Worker stopped";
@@ -670,12 +1362,12 @@
             const params = new URLSearchParams({ack: state.ack});
             try {
                 const totals = await fetchJson(`/api/totals?${params}`);
-                elements.totalAcks.textContent = integerFormatter.format(totals.acknowledgements || 0);
-                elements.totalAccounts.textContent = integerFormatter.format(totals.account_rows || 0);
-                elements.totalCredited.textContent = amountFormatter.format(totals.total_credited || 0);
-                elements.totalDebited.textContent = amountFormatter.format(totals.total_debited || 0);
-                elements.totalUpdated.textContent = amountFormatter.format(totals.total_updated || 0);
-                elements.totalOpen.textContent = amountFormatter.format(totals.total_not_updated || 0);
+                animateMetric(elements.totalAcks, totals.acknowledgements || 0, value => integerFormatter.format(Math.round(value)), 700);
+                animateMetric(elements.totalAccounts, totals.account_rows || 0, value => integerFormatter.format(Math.round(value)), 760);
+                animateMetric(elements.totalCredited, totals.total_credited || 0, value => amountFormatter.format(value), 820);
+                animateMetric(elements.totalDebited, totals.total_debited || 0, value => amountFormatter.format(value), 840);
+                animateMetric(elements.totalUpdated, totals.total_updated || 0, value => amountFormatter.format(value), 880);
+                animateMetric(elements.totalOpen, totals.total_not_updated || 0, value => amountFormatter.format(value), 900);
             } catch (error) {
                 showToast(`Could not load totals: ${error.message}`);
             }
@@ -691,8 +1383,8 @@
                         No summary rows match the selected filters.
                     </td></tr>`;
             } else {
-                elements.tableBody.innerHTML = data.rows.map(row => `
-                    <tr>${data.columns.map(column => {
+                elements.tableBody.innerHTML = data.rows.map((row, rowIndex) => `
+                    <tr style="--row-delay: ${Math.min(rowIndex, 14) * 22}ms">${data.columns.map(column => {
                         const value = row[column.key];
                         if (column.type === "amount") {
                             return `<td class="amount">${amountFormatter.format(Number(value) || 0)}</td>`;
@@ -701,9 +1393,18 @@
                             const normalized = String(value || "").toLowerCase();
                             return `<td><span class="status ${escapeHtml(normalized)}">${escapeHtml(value)}</span></td>`;
                         }
-                        return `<td>${escapeHtml(value)}</td>`;
+                        const cellClasses = [];
+                        if (["acknowledgement_no", "account_number"].includes(column.key)) {
+                            cellClasses.push("id-cell");
+                        }
+                        if (["credited_transaction_id", "breakdown_by_sheet", "duplicate_entry_info"].includes(column.key)) {
+                            cellClasses.push("long-cell");
+                        }
+                        return `<td class="${cellClasses.join(" ")}">${escapeHtml(value)}</td>`;
                     }).join("")}</tr>
                 `).join("");
+                elements.tableBody.classList.remove("is-entering");
+                window.requestAnimationFrame(() => elements.tableBody.classList.add("is-entering"));
             }
             const pagination = data.pagination;
             state.page = pagination.page;
@@ -725,6 +1426,7 @@
                 page: state.page,
                 page_size: state.pageSize
             });
+            elements.tableBody.classList.remove("is-entering");
             elements.tableBody.innerHTML = '<tr class="loading-row"><td>Loading summaries…</td></tr>';
             try {
                 renderTable(await fetchJson(`/api/summary?${params}`));
@@ -830,4 +1532,3 @@
     </script>
 </body>
 </html>
-

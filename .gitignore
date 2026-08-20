@@ -49,8 +49,12 @@ Thumbs.db
 # Logs
 *.log
 
-# Consolidated account-summary database and runtime locks
-data/
+# Account-summary source utilities are versioned; generated data stays local
+data/*
+!data/*.py
+*.db
+*.sqlite
+*.sqlite-*
 *.worker.lock
 
 # Environment variables
