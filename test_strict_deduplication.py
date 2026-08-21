@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 import app_account
 from batch_account_summaries import (
@@ -17,6 +17,7 @@ from batch_account_summaries import (
 )
 from summary_database import (
     connect_database,
+    create_excel_export,
     initialize_database,
     save_file_summaries,
     utc_now,
@@ -95,6 +96,7 @@ def _insert_source(database_path, source_path: str) -> int:
 def test_main_duplicate_filter_returns_credit_counting_view_only() -> None:
     duplicate_with_different_clerical_fields = _main_row(
         serial=99,
+        credited_transaction_id="000CREDIT-001",
         reference="REF-B",
         remarks="copied row with edited notes",
     )
@@ -128,6 +130,88 @@ def test_main_duplicate_filter_returns_credit_counting_view_only() -> None:
     ]
 
 
+def test_credited_duplicate_identity_ignores_only_leading_zeroes() -> None:
+    assert app_account._credited_transaction_identity("00012345") == "12345"
+    assert app_account._credited_transaction_identity("000ABC-001") == "ABC-001"
+    assert app_account._credited_transaction_identity("ABC-001") == "ABC-001"
+    assert app_account._credited_transaction_identity("ABC-0010") == "ABC-0010"
+    assert app_account._credited_transaction_identity("0000") == ""
+
+    dataframe = pd.DataFrame(
+        [
+            _main_row(serial=1, credited_transaction_id="00012345"),
+            _main_row(serial=2, credited_transaction_id="12345"),
+            _main_row(serial=3, credited_transaction_id="000ABC-001"),
+            _main_row(serial=4, credited_transaction_id="ABC-001"),
+            _main_row(serial=5, credited_transaction_id="0000"),
+            _main_row(serial=6, credited_transaction_id="0"),
+        ]
+    )
+
+    result, removed = app_account.strict_deduplicate_main_transactions(dataframe)
+
+    assert removed == 2
+    assert result.iloc[:, 9].tolist() == ["00012345", "000ABC-001", "0000", "0"]
+
+
+def test_other_bank_rows_are_excluded_from_credit_view_not_debit_source() -> None:
+    other_first = _main_row(serial=1, credited_transaction_id="000CREDIT-001")
+    other_first[4] = " Others "
+    other_first[11] = 7000.0
+    real_bank = _main_row(serial=2, credited_transaction_id="CREDIT-001")
+    dataframe = pd.DataFrame([other_first, real_bank])
+
+    credit_view, removed = app_account.strict_deduplicate_main_transactions(
+        dataframe
+    )
+
+    assert removed == 0
+    assert len(dataframe) == 2
+    assert len(credit_view) == 1
+    assert credit_view.iloc[0, 4] == "Example Bank"
+    assert credit_view.iloc[0, 11] == 2500.0
+    assert sum(app_account.clean_amount(row.iloc[11]) for _, row in dataframe.iterrows()) == 9500.0
+
+
+def test_other_bank_rows_are_copied_raw_and_excluded_only_from_credit(tmp_path) -> None:
+    workbook_path = tmp_path / "money-transfer-to-others.xlsx"
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Money Transfer"
+    headers = [f"Column {index}" for index in range(1, 18)]
+    headers[1] = "Acknowledgement No."
+    headers[4] = "Bank Name"
+    worksheet.append(headers)
+    real_bank = _main_row(serial=1)
+    other_bank = _main_row(
+        serial=2,
+        credited_transaction_id="OTHER-CREDIT-001",
+    )
+    other_bank[4] = "Other"
+    other_bank[11] = 7000.0
+    worksheet.append(real_bank)
+    worksheet.append(other_bank)
+    workbook.save(workbook_path)
+
+    try:
+        summaries, _audit = analyse_with_existing_app(workbook_path)
+    finally:
+        release_app_memory()
+
+    account_rows = {
+        str(row["Account Number"]): row
+        for row in summaries["Account Wise Summary"]
+    }
+    assert account_rows["9876544321"]["Total Credited Amount"] == pytest.approx(2500.0)
+    assert account_rows["XXXXXX1234"]["Total Debited Amount"] == pytest.approx(9500.0)
+
+    raw_rows = summaries["Money Transfer to Others"]
+    assert len(raw_rows) == 1
+    assert list(raw_rows[0]) == headers
+    assert raw_rows[0]["Bank Name"] == "Other"
+    assert raw_rows[0]["Column 12"] == pytest.approx(7000.0)
+
+
 def test_complete_duplicate_row_amounts_are_excluded_and_noted(tmp_path) -> None:
     workbook_path = tmp_path / "duplicate-amounts.xlsx"
     workbook = Workbook()
@@ -143,6 +227,7 @@ def test_complete_duplicate_row_amounts_are_excluded_and_noted(tmp_path) -> None
     duplicate[10] = 123456.0
     duplicate[11] = 7777.0
     duplicate[3] = "DEBIT-DUPLICATE-ROW"
+    duplicate[9] = "000CREDIT-001"
     worksheet.append(original)
     worksheet.append(duplicate)
 
@@ -252,6 +337,14 @@ def test_sqlite_drops_identical_summaries_and_rejects_ack_from_other_file(
         "Account Wise Summary": [account, dict(account)],
         "Bank Wise Summary": [bank, dict(bank)],
         "Partial Bank Wise Summary": [],
+        "Money Transfer to Others": [
+            {
+                "Acknowledgement No.": "ACK-001",
+                "Bank Name": "Others",
+                "Credited Transaction ID": "OTHER-1",
+                "Disputed Amount": 7000,
+            }
+        ],
     }
 
     counts = save_file_summaries(
@@ -264,14 +357,47 @@ def test_sqlite_drops_identical_summaries_and_rejects_ack_from_other_file(
 
     assert counts["account"] == 1
     assert counts["bank"] == 1
+    assert counts["money_transfer_to_others"] == 1
     assert counts["duplicate_summary_rows_removed"] == 2
     connection = connect_database(database_path, readonly=True)
     try:
         assert connection.execute(
             "SELECT COUNT(*) FROM account_summaries"
         ).fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM money_transfer_to_others_rows"
+        ).fetchone()[0] == 1
+        source = connection.execute(
+            """
+            SELECT money_transfer_other_row_count
+            FROM source_files WHERE id = ?
+            """,
+            (first_source_id,),
+        ).fetchone()
+        assert source["money_transfer_other_row_count"] == 1
     finally:
         connection.close()
+
+    export = create_excel_export(database_path)
+    workbook = load_workbook(export, read_only=True, data_only=True)
+    try:
+        assert "Money Transfer to Others" in workbook.sheetnames
+        raw_sheet = workbook["Money Transfer to Others"]
+        exported_rows = list(raw_sheet.iter_rows(values_only=True))
+        assert exported_rows[0] == (
+            "Acknowledgement No.",
+            "Bank Name",
+            "Credited Transaction ID",
+            "Disputed Amount",
+        )
+        assert exported_rows[1] == (
+            "ACK-001",
+            "Others",
+            "OTHER-1",
+            7000,
+        )
+    finally:
+        workbook.close()
 
     conflicting = {
         "Account Wise Summary": [
@@ -422,6 +548,7 @@ def test_fast_audit_reads_only_requested_duplicate_key_and_queues_file(
     worksheet.append([f"Column {index}" for index in range(1, 11)])
     first = _main_row(serial=1)[:10]
     repeated_key = _main_row(serial=2)[:10]
+    repeated_key[9] = "000CREDIT-001"
     repeated_key[2] = "different debit account"
     repeated_key[3] = "different debit transaction"
     repeated_key[4] = "different bank"

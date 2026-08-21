@@ -42,8 +42,12 @@ from summary_database import (
 
 LOGGER = logging.getLogger("account_summary_batch")
 SUPPORTED_EXTENSIONS = {".xlsx", ".xlsm", ".xltx", ".xltm"}
-FAST_DUPLICATE_AUDIT_VERSION = "ack-credit-tid-credit-account-last4-v1"
-DUPLICATE_SUMMARY_VERSION = "ack-credit-tid-credit-account-last4-credit-only-v4"
+FAST_DUPLICATE_AUDIT_VERSION = (
+    "ack-credit-tid-no-leading-zero-credit-account-last4-no-other-bank-v3"
+)
+DUPLICATE_SUMMARY_VERSION = (
+    "ack-credit-tid-no-leading-zero-credit-account-last4-no-other-bank-v6"
+)
 CELL_COLUMN_PATTERN = re.compile(r"([A-Za-z]+)")
 
 
@@ -249,7 +253,7 @@ def _xlsx_cell_value(
 
 
 def audit_workbook_duplicate_keys(source_path: Path) -> tuple[int, int]:
-    """Read only B/G/J and count repeated ACK + credited-TID + account-last4."""
+    """Count repeated B/G/J credit keys, excluding E=Other/Others."""
     with zipfile.ZipFile(source_path) as archive:
         shared_strings = _read_shared_strings(archive)
         worksheet_path = _money_transfer_sheet_path(archive)
@@ -276,7 +280,7 @@ def audit_workbook_duplicate_keys(source_path: Path) -> tuple[int, int]:
                     if not match:
                         continue
                     column = match.group(1).upper()
-                    if column in {"B", "G", "J"}:
+                    if column in {"B", "E", "G", "J"}:
                         selected[column] = _xlsx_cell_value(
                             cell,
                             shared_strings,
@@ -285,8 +289,11 @@ def audit_workbook_duplicate_keys(source_path: Path) -> tuple[int, int]:
                 credited_account_last_four = app_account._account_last_four(
                     selected.get("G", "")
                 )
-                credited_transaction_id = app_account._identity_text(
+                credited_transaction_id = app_account._credited_transaction_identity(
                     selected.get("J", "")
+                )
+                is_other_bank = app_account._is_money_transfer_to_others_bank(
+                    selected.get("E", "")
                 )
                 if (
                     acknowledgement
@@ -295,7 +302,8 @@ def audit_workbook_duplicate_keys(source_path: Path) -> tuple[int, int]:
                 ):
                     data_rows += 1
                 if (
-                    acknowledgement
+                    not is_other_bank
+                    and acknowledgement
                     and credited_account_last_four
                     and credited_transaction_id
                 ):
@@ -317,7 +325,7 @@ def fast_audit_and_queue_duplicate_files(
     *,
     workers: int,
 ) -> dict[str, int]:
-    """Audit just three XLSX columns and queue only affected/uncertain files."""
+    """Audit ACK, bank, credited account, and TID columns efficiently."""
     connection = connect_database(database_path)
     try:
         candidates = [
@@ -486,6 +494,7 @@ def _mark_duplicate_in_connection(
         "account_summaries",
         "bank_summaries",
         "partial_bank_summaries",
+        "money_transfer_to_others_rows",
     ):
         connection.execute(
             f"DELETE FROM {table_name} WHERE source_file_id = ?",
@@ -501,6 +510,7 @@ def _mark_duplicate_in_connection(
             account_row_count = 0,
             bank_row_count = 0,
             partial_bank_row_count = 0,
+            money_transfer_other_row_count = 0,
             content_sha256 = ?,
             duplicate_of_source_file_id = ?,
             main_rows_read = 0,
@@ -889,6 +899,7 @@ def parse_summary_workbook(payload: bytes) -> dict[str, list[dict[str, Any]]]:
         "Account Wise Summary",
         "Bank Wise Summary",
         "Partial Bank Wise Summary",
+        "Money Transfer to Others",
     )
     workbook = load_workbook(
         BytesIO(payload),
@@ -1256,7 +1267,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--fast-reprocess-duplicates",
         action="store_true",
         help=(
-            "Read only ACK, credited transaction ID, and credited-account "
+            "Read only ACK, bank, credited transaction ID, and credited-account "
             "columns, then queue only files containing duplicate keys."
         ),
     )

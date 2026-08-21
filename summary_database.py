@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 from datetime import datetime, timezone
@@ -170,6 +171,7 @@ def _apply_schema_migrations(connection: sqlite3.Connection) -> None:
         "fast_duplicate_rows_found": "INTEGER NOT NULL DEFAULT 0",
         "fast_duplicate_audit_error": "TEXT",
         "fast_duplicate_reprocessed_version": "TEXT",
+        "money_transfer_other_row_count": "INTEGER NOT NULL DEFAULT 0",
     }
     for column_name, declaration in source_columns.items():
         _ensure_column(
@@ -416,6 +418,7 @@ def initialize_database(
                 account_row_count INTEGER NOT NULL DEFAULT 0,
                 bank_row_count INTEGER NOT NULL DEFAULT 0,
                 partial_bank_row_count INTEGER NOT NULL DEFAULT 0,
+                money_transfer_other_row_count INTEGER NOT NULL DEFAULT 0,
                 content_sha256 TEXT,
                 duplicate_of_source_file_id INTEGER
                     REFERENCES source_files(id) ON DELETE SET NULL,
@@ -484,6 +487,16 @@ def initialize_database(
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS money_transfer_to_others_rows (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_file_id INTEGER NOT NULL
+                    REFERENCES source_files(id) ON DELETE CASCADE,
+                acknowledgement_no TEXT COLLATE NOCASE,
+                source_row_number INTEGER NOT NULL,
+                row_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS worker_state (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 is_running INTEGER NOT NULL DEFAULT 0,
@@ -516,6 +529,10 @@ def initialize_database(
                 ON partial_bank_summaries(acknowledgement_no);
             CREATE INDEX IF NOT EXISTS idx_partial_source_file
                 ON partial_bank_summaries(source_file_id);
+            CREATE INDEX IF NOT EXISTS idx_money_transfer_other_source
+                ON money_transfer_to_others_rows(source_file_id, source_row_number);
+            CREATE INDEX IF NOT EXISTS idx_money_transfer_other_ack
+                ON money_transfer_to_others_rows(acknowledgement_no);
 
             INSERT OR IGNORE INTO worker_state(id, is_running)
             VALUES (1, 0);
@@ -537,6 +554,14 @@ def _clean_text(value: Any, default: str = "") -> str:
     if text.lower() in {"nan", "none"}:
         return default
     return text
+
+
+def _raw_acknowledgement(record: Mapping[str, Any]) -> str:
+    """Read the ACK from a raw Money Transfer row despite punctuation."""
+    for header, value in record.items():
+        if "acknowledgement" in " ".join(str(header).casefold().split()):
+            return _clean_text(value)
+    return ""
 
 
 def _clean_number(value: Any) -> float:
@@ -624,6 +649,9 @@ def save_file_summaries(
     account_records = list(summaries.get("Account Wise Summary", ()))
     bank_records = list(summaries.get("Bank Wise Summary", ()))
     partial_records = list(summaries.get("Partial Bank Wise Summary", ()))
+    money_transfer_other_records = list(
+        summaries.get("Money Transfer to Others", ())
+    )
     created_at = utc_now()
 
     account_values_raw = [
@@ -637,6 +665,24 @@ def save_file_summaries(
     partial_values_raw = [
         (source_file_id, *_record_to_values(record, BANK_COLUMNS), created_at)
         for record in partial_records
+    ]
+    money_transfer_other_values = [
+        (
+            source_file_id,
+            _raw_acknowledgement(record),
+            source_row_number,
+            json.dumps(
+                dict(record),
+                ensure_ascii=False,
+                default=str,
+                separators=(",", ":"),
+            ),
+            created_at,
+        )
+        for source_row_number, record in enumerate(
+            money_transfer_other_records,
+            start=2,
+        )
     ]
     account_values, account_duplicates = _deduplicate_summary_values(
         account_values_raw,
@@ -676,6 +722,10 @@ def save_file_summaries(
             )
             connection.execute(
                 "DELETE FROM partial_bank_summaries WHERE source_file_id = ?",
+                (source_file_id,),
+            )
+            connection.execute(
+                "DELETE FROM money_transfer_to_others_rows WHERE source_file_id = ?",
                 (source_file_id,),
             )
 
@@ -759,6 +809,19 @@ def save_file_summaries(
                     """,
                     partial_values,
                 )
+            if money_transfer_other_values:
+                connection.executemany(
+                    """
+                    INSERT INTO money_transfer_to_others_rows (
+                        source_file_id,
+                        acknowledgement_no,
+                        source_row_number,
+                        row_json,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    money_transfer_other_values,
+                )
 
             connection.execute(
                 """
@@ -770,6 +833,7 @@ def save_file_summaries(
                     account_row_count = ?,
                     bank_row_count = ?,
                     partial_bank_row_count = ?,
+                    money_transfer_other_row_count = ?,
                     main_rows_read = ?,
                     duplicate_transaction_rows_removed = ?,
                     other_rows_read = ?,
@@ -787,6 +851,7 @@ def save_file_summaries(
                     len(account_values),
                     len(bank_values),
                     len(partial_values),
+                    len(money_transfer_other_values),
                     int(audit.get("main_rows_read", 0) or 0),
                     int(
                         audit.get("duplicate_transaction_rows_removed", 0)
@@ -804,6 +869,7 @@ def save_file_summaries(
             "account": len(account_values),
             "bank": len(bank_values),
             "partial": len(partial_values),
+            "money_transfer_to_others": len(money_transfer_other_values),
             "duplicate_summary_rows_removed": duplicate_summary_rows_removed,
             "duplicate_transaction_rows_removed": int(
                 audit.get("duplicate_transaction_rows_removed", 0) or 0
@@ -862,6 +928,7 @@ def mark_file_as_duplicate(
                 "account_summaries",
                 "bank_summaries",
                 "partial_bank_summaries",
+                "money_transfer_to_others_rows",
             ):
                 connection.execute(
                     f"DELETE FROM {table_name} WHERE source_file_id = ?",
@@ -877,6 +944,7 @@ def mark_file_as_duplicate(
                     account_row_count = 0,
                     bank_row_count = 0,
                     partial_bank_row_count = 0,
+                    money_transfer_other_row_count = 0,
                     content_sha256 = ?,
                     duplicate_of_source_file_id = ?,
                     main_rows_read = 0,
@@ -1222,12 +1290,40 @@ def _iter_export_rows(
         yield from rows
 
 
+def _iter_money_transfer_other_records(
+    connection: sqlite3.Connection,
+    acknowledgement: str | None,
+) -> Iterable[dict[str, Any]]:
+    where_clause = ""
+    parameters: list[Any] = []
+    if acknowledgement and acknowledgement.upper() != "ALL":
+        where_clause = "WHERE acknowledgement_no = ? COLLATE NOCASE"
+        parameters.append(acknowledgement.strip())
+    cursor = connection.execute(
+        f"""
+        SELECT row_json
+        FROM money_transfer_to_others_rows
+        {where_clause}
+        ORDER BY source_file_id, source_row_number, id
+        """,
+        parameters,
+    )
+    while True:
+        rows = cursor.fetchmany(1000)
+        if not rows:
+            break
+        for row in rows:
+            record = json.loads(row["row_json"])
+            if isinstance(record, dict):
+                yield record
+
+
 def create_excel_export(
     database_path: str | Path,
     *,
     acknowledgement: str | None = "ALL",
 ) -> BytesIO:
-    """Build the same three summary views as a styled, filterable workbook."""
+    """Build three summaries plus raw Money Transfer to Others rows."""
     initialize_database(database_path)
     connection = connect_database(database_path, readonly=True)
     workbook = Workbook(write_only=True)
@@ -1328,6 +1424,63 @@ def create_excel_export(
             worksheet.auto_filter.ref = f"A1:{last_column}{row_count + 1}"
             for index, width in enumerate(config["column_widths"], start=1):
                 worksheet.column_dimensions[get_column_letter(index)].width = width
+
+        raw_columns: list[str] = []
+        seen_raw_columns: set[str] = set()
+        for record in _iter_money_transfer_other_records(
+            connection,
+            acknowledgement,
+        ):
+            for column in record:
+                if column not in seen_raw_columns:
+                    seen_raw_columns.add(column)
+                    raw_columns.append(column)
+
+        raw_worksheet = workbook.create_sheet("Money Transfer to Others")
+        raw_worksheet.freeze_panes = "A2"
+        raw_worksheet.sheet_view.showGridLines = False
+        if raw_columns:
+            raw_header_cells = []
+            for column in raw_columns:
+                cell = WriteOnlyCell(raw_worksheet, value=column)
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(
+                    horizontal="center",
+                    vertical="center",
+                    wrap_text=True,
+                )
+                raw_header_cells.append(cell)
+            raw_worksheet.append(raw_header_cells)
+
+            raw_row_count = 0
+            for raw_row_count, record in enumerate(
+                _iter_money_transfer_other_records(
+                    connection,
+                    acknowledgement,
+                ),
+                start=1,
+            ):
+                cells = []
+                for column in raw_columns:
+                    cell = WriteOnlyCell(
+                        raw_worksheet,
+                        value=record.get(column),
+                    )
+                    cell.border = thin_border
+                    cell.alignment = Alignment(vertical="center")
+                    if raw_row_count % 2 == 0:
+                        cell.fill = stripe_fill
+                    cells.append(cell)
+                raw_worksheet.append(cells)
+            raw_last_column = get_column_letter(len(raw_columns))
+            raw_worksheet.auto_filter.ref = (
+                f"A1:{raw_last_column}{raw_row_count + 1}"
+            )
+            for index, column in enumerate(raw_columns, start=1):
+                raw_worksheet.column_dimensions[
+                    get_column_letter(index)
+                ].width = min(50, max(12, len(column) + 2))
 
         output = BytesIO()
         workbook.save(output)

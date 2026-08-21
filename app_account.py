@@ -18,6 +18,9 @@ df_main = None
 df_other_sheets = {}
 uploaded_files_count = 0
 
+MONEY_TRANSFER_TO_OTHERS_SHEET = 'Money Transfer to Others'
+OTHER_BANK_NAMES = {'OTHER', 'OTHERS'}
+
 # Lookup maps for optimization
 debited_acc_map = {}
 credited_acc_map = {}
@@ -60,6 +63,34 @@ def _identity_text(value):
     return text.upper()
 
 
+def _credited_transaction_identity(value):
+    """Normalize a credited transaction ID for duplicate matching only.
+
+    Leading zeroes are not significant for the credited-duplicate business
+    rule, so values such as ``000123``/``123`` and ``000ABC``/``ABC`` match.
+    An all-zero value becomes blank and is not safe to deduplicate.  Callers
+    continue to retain the original spreadsheet value for display and for all
+    debit/recovery matching.
+    """
+    return _identity_text(value).lstrip('0')
+
+
+def _is_money_transfer_to_others_bank(value):
+    """Identify Money Transfer rows whose credited bank is Other/Others."""
+    return _identity_text(value) in OTHER_BANK_NAMES
+
+
+def _money_transfer_to_others_frame(dataframe=None):
+    """Copy raw Other/Others rows without removing them from Money Transfer."""
+    source = df_main if dataframe is None else dataframe
+    if source is None:
+        return pd.DataFrame()
+    if source.empty or len(source.columns) <= 4:
+        return source.iloc[0:0].copy()
+    mask = source.iloc[:, 4].map(_is_money_transfer_to_others_bank)
+    return source.loc[mask].copy()
+
+
 def _account_last_four(value):
     """Match full and masked versions of the same account by last four."""
     text = _identity_text(value)
@@ -79,7 +110,7 @@ def build_transaction_identity(row):
         return None
     acknowledgement = _identity_text(row.iloc[1])
     credited_account_last_four = _account_last_four(row.iloc[6])
-    credited_transaction_id = _identity_text(row.iloc[9])
+    credited_transaction_id = _credited_transaction_identity(row.iloc[9])
     if not (
         acknowledgement
         and credited_account_last_four
@@ -113,6 +144,11 @@ def strict_deduplicate_main_transactions(dataframe):
     duplicates_removed = 0
     duplicate_groups = {}
     for position, (_, row) in enumerate(dataframe.iterrows()):
+        # These raw rows are copied to their own output sheet. They remain in
+        # df_main for debit aggregation, but do not participate in credited
+        # totals or credited-duplicate counting.
+        if len(row) > 4 and _is_money_transfer_to_others_bank(row.iloc[4]):
+            continue
         identity = build_transaction_identity(row)
         if identity is None:
             keep_positions.append(position)
@@ -1328,7 +1364,15 @@ def get_all_transactions():
             strip_account
         )
 
-        all_accounts = set(debited_series[debited_series != ''].unique()) | set(credited_series[credited_series != ''].unique())
+        credited_bank_is_countable = ~df_ack_main.iloc[:, 4].map(
+            _is_money_transfer_to_others_bank
+        )
+
+        all_accounts = set(debited_series[debited_series != ''].unique()) | set(
+            credited_series[
+                (credited_series != '') & credited_bank_is_countable
+            ].unique()
+        )
 
         # Store the longest string variant for each account
         display_names = {}
@@ -1343,7 +1387,9 @@ def get_all_transactions():
             display_acc = display_names.get(acc, acc)
 
             # Credited stats (Money coming IN)
-            credited_rows = df_ack_main[credited_series == acc]
+            credited_rows = df_ack_main[
+                (credited_series == acc) & credited_bank_is_countable
+            ]
             credited_rows_for_total = credit_counting_df[
                 credit_counting_series == acc
             ]
@@ -1504,13 +1550,18 @@ def get_all_transactions_by_id():
 
         # Collect all unique credited transaction IDs (column 9 only)
         all_trans_ids = set()
-        credited_trans_ids = df_ack_main.iloc[:, 9].astype(str).str.strip()
+        credited_trans_ids = (
+            credit_counting_df.iloc[:, 9].astype(str).str.strip()
+        )
         # FILTER: Only include non-null credited transaction IDs
         all_trans_ids.update([tid for tid in credited_trans_ids if tid and tid.lower() not in ('nan', 'none', '', 'unknown', '-', 'null')])
 
         for trans_id in sorted(all_trans_ids):
             # Find all rows where this transaction ID appears as credited (column 9)
-            credited_rows = df_ack_main[df_ack_main.iloc[:, 9].astype(str).str.strip() == trans_id]
+            credited_rows = credit_counting_df[
+                credit_counting_df.iloc[:, 9].astype(str).str.strip()
+                == trans_id
+            ]
 
             # Collect credited account numbers (column 6) and bank names (column 4)
             credited_account_numbers = set()
@@ -2384,8 +2435,16 @@ def download_account_summary():
             credit_counting_series = credit_counting_df.iloc[:, 6].apply(
                 strip_account
             )
+
+            credited_bank_is_countable = ~df_ack_main.iloc[:, 4].map(
+                _is_money_transfer_to_others_bank
+            )
             
-            all_accounts = set(debited_series[debited_series != ''].unique()) | set(credited_series[credited_series != ''].unique())
+            all_accounts = set(debited_series[debited_series != ''].unique()) | set(
+                credited_series[
+                    (credited_series != '') & credited_bank_is_countable
+                ].unique()
+            )
             
             # Store the longest string variant for each account to use as the display name
             display_names = {}
@@ -2418,7 +2477,9 @@ def download_account_summary():
                 display_acc = display_names.get(acc, acc)
                 
                 # Credited stats (Money coming IN to this account)
-                credited_rows = df_ack_main[credited_series == acc]
+                credited_rows = df_ack_main[
+                    (credited_series == acc) & credited_bank_is_countable
+                ]
                 credited_rows_for_total = credit_counting_df[
                     credit_counting_series == acc
                 ]
@@ -2590,6 +2651,7 @@ def download_account_summary():
         df_acc = pd.DataFrame(all_account_summary)
         df_bank = pd.DataFrame(all_bank_data_list)
         df_partial_bank = pd.DataFrame(all_partial_bank_data_list)
+        df_money_transfer_to_others = _money_transfer_to_others_frame()
         
         if len(df_acc) == 0:
             return jsonify({'success': False, 'message': 'No account data found'})
@@ -2604,6 +2666,11 @@ def download_account_summary():
             df_acc.to_excel(writer, sheet_name='Account Wise Summary', index=False)
             df_bank.to_excel(writer, sheet_name='Bank Wise Summary', index=False)
             df_partial_bank.to_excel(writer, sheet_name='Partial Bank Wise Summary', index=False)
+            df_money_transfer_to_others.to_excel(
+                writer,
+                sheet_name=MONEY_TRANSFER_TO_OTHERS_SHEET,
+                index=False,
+            )
             
             from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
             
@@ -2674,6 +2741,31 @@ def download_account_summary():
                         
                         if cell.column == yes_no_col:
                             cell.alignment = Alignment(horizontal='center', vertical='center')
+
+            raw_worksheet = writer.sheets[MONEY_TRANSFER_TO_OTHERS_SHEET]
+            raw_worksheet.freeze_panes = 'A2'
+            raw_worksheet.auto_filter.ref = raw_worksheet.dimensions
+            for cell in raw_worksheet[1]:
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(
+                    horizontal='center',
+                    vertical='center',
+                    wrap_text=True,
+                )
+                cell.border = thin_border
+            for column_cells in raw_worksheet.columns:
+                column_letter = column_cells[0].column_letter
+                raw_worksheet.column_dimensions[column_letter].width = min(
+                    50,
+                    max(
+                        12,
+                        max(
+                            len(str(cell.value or ''))
+                            for cell in column_cells
+                        ) + 2,
+                    ),
+                )
                         
         output.seek(0)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -2732,12 +2824,17 @@ def download_transaction_id_summary():
             
             # Collect all unique credited transaction IDs (column 9 only)
             all_trans_ids = set()
-            credited_trans_ids = df_ack_main.iloc[:, 9].astype(str).str.strip()
+            credited_trans_ids = (
+                credit_counting_df.iloc[:, 9].astype(str).str.strip()
+            )
             all_trans_ids.update([tid for tid in credited_trans_ids if tid and tid.lower() not in ('nan', 'none', '', 'unknown', '-')])
 
             for trans_id in sorted(all_trans_ids):
                 # Find all rows where this transaction ID appears as credited (column 9)
-                credited_rows = df_ack_main[df_ack_main.iloc[:, 9].astype(str).str.strip() == trans_id]
+                credited_rows = credit_counting_df[
+                    credit_counting_df.iloc[:, 9].astype(str).str.strip()
+                    == trans_id
+                ]
 
                 # Collect credited account numbers (column 6) and bank names (column 4)
                 credited_account_numbers = set()
